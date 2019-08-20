@@ -21,6 +21,7 @@ PropertyInterface& PropertyInterface::setProperty(Property* property) {
 HomieNode::HomieNode(const char* id, const char* type, const NodeInputHandler& inputHandler)
 : _id(id)
 , _type(type)
+, runLoopDisconnected(false)
 , _properties()
 , _inputHandler(inputHandler) {
   if (strlen(id) + 1 > MAX_NODE_ID_LENGTH || strlen(type) + 1 > MAX_NODE_TYPE_LENGTH) {
