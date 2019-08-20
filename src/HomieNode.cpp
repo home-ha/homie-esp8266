@@ -51,6 +51,7 @@ HomieNode::HomieNode(const char* id, const char* name, const char* type, bool ra
 , _range(range)
 , _lower(lower)
 , _upper(upper)
+, runLoopDisconnected(false)
 , _properties()
 , _inputHandler(inputHandler) {
   if (strlen(id) + 1 > MAX_NODE_ID_LENGTH || strlen(type) + 1 > MAX_NODE_TYPE_LENGTH) {

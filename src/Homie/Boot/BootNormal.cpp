@@ -2,7 +2,6 @@
 
 using namespace HomieInternals;
 
-#ifdef ESP32
 BootNormal::BootNormal()
   : Boot("normal")
   , _mqttReconnectTimer(MQTT_RECONNECT_INITIAL_INTERVAL, MQTT_RECONNECT_MAX_BACKOFF)
@@ -22,42 +21,16 @@ BootNormal::BootNormal()
   , _mqttPayloadBuffer(nullptr)
   , _mqttTopicLevels(nullptr)
   , _mqttTopicLevelsCount(0) {
-  //FIXME: getSketchMD5 not implemented / boot loop on ESP32
-  //Remove Update.h from BootNormal.cpp, change status codes to https://docs.espressif.com/projects/esp-idf/en/latest/api-reference/system/ota.html
-  strcpy(_fwChecksum, "00000000000000000000000000000000");
-  _fwChecksum[sizeof(_fwChecksum) - 1] = '\0';
 }
-#elif defined(ESP8266)
-BootNormal::BootNormal()
-  : Boot("normal")
-  , _mqttReconnectTimer(MQTT_RECONNECT_INITIAL_INTERVAL, MQTT_RECONNECT_MAX_BACKOFF)
-  , _setupFunctionCalled(false)
-  , _mqttConnectNotified(false)
-  , _mqttDisconnectNotified(true)
-  , _otaOngoing(false)
-  , _flaggedForReboot(false)
-  , _mqttOfflineMessageId(0)
-  , _otaIsBase64(false)
-  , _otaBase64Pads(0)
-  , _otaSizeTotal(0)
-  , _otaSizeDone(0)
-  , _mqttTopic(nullptr)
-  , _mqttClientId(nullptr)
-  , _mqttWillTopic(nullptr)
-  , _mqttPayloadBuffer(nullptr)
-  , _mqttTopicLevels(nullptr)
-  , _mqttTopicLevelsCount(0) {
-  strlcpy(_fwChecksum, ESP.getSketchMD5().c_str(), sizeof(_fwChecksum));
-  _fwChecksum[sizeof(_fwChecksum) - 1] = '\0';
-}
-#endif // ESP32
-
 
 BootNormal::~BootNormal() {
 }
 
 void BootNormal::setup() {
   Boot::setup();
+
+  strlcpy(_fwChecksum, ESP.getSketchMD5().c_str(), sizeof(_fwChecksum));
+  _fwChecksum[sizeof(_fwChecksum) - 1] = '\0';
 
   #ifdef ESP32
   //FIXME
@@ -99,6 +72,18 @@ void BootNormal::setup() {
   Interface::get().getMqttClient().onPublish(std::bind(&BootNormal::_onMqttPublish, this, std::placeholders::_1));
 
   Interface::get().getMqttClient().setServer(Interface::get().getConfig().get().mqtt.server.host, Interface::get().getConfig().get().mqtt.server.port);
+
+#if ASYNC_TCP_SSL_ENABLED
+  Interface::get().getLogger() << "SSL is: " << Interface::get().getConfig().get().mqtt.server.ssl.enabled << endl;
+  Interface::get().getMqttClient().setSecure(Interface::get().getConfig().get().mqtt.server.ssl.enabled);
+  if (Interface::get().getConfig().get().mqtt.server.ssl.enabled && Interface::get().getConfig().get().mqtt.server.ssl.hasFingerprint) {
+    char hexBuf[MAX_FINGERPRINT_STRING_LENGTH];
+    Helpers::byteArrayToHexString(Interface::get().getConfig().get().mqtt.server.ssl.fingerprint, hexBuf, MAX_FINGERPRINT_SIZE);
+    Interface::get().getLogger() << "Using fingerprint: " << hexBuf << endl;
+    Interface::get().getMqttClient().addServerFingerprint((const uint8_t*)Interface::get().getConfig().get().mqtt.server.ssl.fingerprint);
+  }
+#endif
+
   Interface::get().getMqttClient().setMaxTopicLength(MAX_MQTT_TOPIC_LENGTH);
   _mqttClientId = std::unique_ptr<char[]>(new char[strlen(Interface::get().brand) + 1 + strlen(Interface::get().getConfig().get().deviceId) + 1]);
   strcpy(_mqttClientId.get(), Interface::get().brand);
@@ -112,7 +97,9 @@ void BootNormal::setup() {
 
   if (Interface::get().getConfig().get().mqtt.auth) Interface::get().getMqttClient().setCredentials(Interface::get().getConfig().get().mqtt.username, Interface::get().getConfig().get().mqtt.password);
 
+#if HOMIE_CONFIG
   ResetHandler::Attach();
+#endif
 
   Interface::get().getConfig().log();
 
@@ -134,6 +121,9 @@ void BootNormal::loop() {
     ESP.restart();
   }
 
+  for (HomieNode* iNode : HomieNode::nodes) {
+    if (iNode->runLoopDisconnected ||Interface::get().getMqttClient().connected()) iNode->loop();
+  }
   if (_mqttReconnectTimer.check()) {
     _mqttConnect();
     return;
@@ -200,13 +190,11 @@ void BootNormal::loop() {
     uint16_t uptimePacketId = Interface::get().getMqttClient().publish(_prefixMqttTopic(PSTR("/$stats/uptime")), 1, true, uptimeStr);
 
     if (intervalPacketId != 0 && signalPacketId != 0 && uptimePacketId != 0) _statsTimer.tick();
+    Interface::get().event.type = HomieEventType::SENDING_STATISTICS;
+    Interface::get().eventHandler(Interface::get().event);
   }
 
   Interface::get().loopFunction();
-
-  for (HomieNode* iNode : HomieNode::nodes) {
-    iNode->loop();
-  }
 }
 
 void BootNormal::_prefixMqttTopic() {
@@ -362,7 +350,9 @@ void BootNormal::_onWifiGotIp(const WiFiEventStationModeGotIP& event) {
   Interface::get().event.mask = event.mask;
   Interface::get().event.gateway = event.gw;
   Interface::get().eventHandler(Interface::get().event);
+#if HOMIE_MDNS
   MDNS.begin(Interface::get().getConfig().get().deviceId);
+#endif
 
   _mqttConnect();
 }
@@ -746,6 +736,8 @@ void BootNormal::_onMqttConnected() {
   _mqttDisconnectNotified = false;
   _mqttReconnectTimer.deactivate();
 
+  Update.end();
+
   Interface::get().getLogger() << F("Sending initial information...") << endl;
 
   _advertise();
@@ -780,10 +772,8 @@ void BootNormal::_onMqttDisconnected(AsyncMqttClientDisconnectReason reason) {
     }
 
     _mqttConnect();
-
-  } else {
-    _mqttReconnectTimer.activate();
   }
+  _mqttReconnectTimer.activate();
 }
 
 void BootNormal::_onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {

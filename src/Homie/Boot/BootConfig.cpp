@@ -1,5 +1,6 @@
 #include "BootConfig.hpp"
 
+#if HOMIE_CONFIG
 using namespace HomieInternals;
 
 BootConfig::BootConfig()
@@ -33,7 +34,7 @@ void BootConfig::setup() {
   WiFi.mode(WIFI_AP_STA);
 
   char apName[MAX_WIFI_SSID_LENGTH];
-  strlcpy(apName, Interface::get().brand, MAX_WIFI_SSID_LENGTH - 1 - MAX_MAC_STRING_LENGTH);
+  strlcpy(apName, Interface::get().brand, MAX_WIFI_SSID_LENGTH - 1 - (MAX_MAC_STRING_LENGTH - 1));
   strcat_P(apName, PSTR("-"));
   strcat(apName, DeviceId::get());
 
@@ -277,7 +278,7 @@ void BootConfig::_onCaptivePortal(AsyncWebServerRequest *request) {
     }
   } else if (request->url() == "/" && !SPIFFS.exists(CONFIG_UI_BUNDLE_PATH)) {
     // UI File not found
-    String msg = String(F("UI bundle not loaded. See Configuration API usage: http://marvinroger.github.io/homie-esp8266/"));
+    String msg = String(F("UI bundle not loaded. See Configuration API usage: http://homieiot.github.io/homie-esp8266"));
     Interface::get().getLogger() << msg << endl;
     request->send(404, F("text/plain"), msg);
   } else if (request->url() == "/" && SPIFFS.exists(CONFIG_UI_BUNDLE_PATH)) {
@@ -460,3 +461,4 @@ void HomieInternals::BootConfig::__SendJSONError(AsyncWebServerRequest * request
   String errorJson = BEGINNING + msg + END;
   request->send(code, FPSTR(PROGMEM_CONFIG_APPLICATION_JSON), errorJson);
 }
+#endif
